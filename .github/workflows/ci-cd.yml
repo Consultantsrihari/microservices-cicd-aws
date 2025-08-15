@@ -1,0 +1,81 @@
+## .github/workflows/ci-cd.yml
+name: CI-CD Pipeline for Microservices
+
+# This pipeline runs on every push to the 'main' branch
+on:
+  push:
+    branches: [ "main" ]
+
+# Environment variables available to all jobs
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: microservices-cluster
+  
+jobs:
+  # --- JOB 1: Build & Push Container Images ---
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    strategy:
+      # This creates a parallel job for each service, speeding things up
+      matrix:
+        service: [python-backend, react-frontend, go-processor]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: \${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: \${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: \${{ matrix.service }}
+        # Use the Git commit SHA for a unique, traceable image tag
+        IMAGE_TAG: \${{ github.sha }}
+      run: |
+        docker build -t \$ECR_REGISTRY/\$ECR_REPOSITORY:\$IMAGE_TAG -f \${{ matrix.service }}/Dockerfile ./\${{ matrix.service }}
+        docker push \$ECR_REGISTRY/\$ECR_REPOSITORY:\$IMAGE_TAG
+
+  # --- JOB 2: Deploy to Kubernetes Cluster ---
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    # This job will only run after all 'build-and-push' jobs succeed
+    needs: build-and-push
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: \${{ env.AWS_REGION }}
+
+    - name: Set up Kubeconfig for EKS
+      run: aws eks update-kubeconfig --region \${{ env.AWS_REGION }} --name \${{ env.EKS_CLUSTER_NAME }}
+
+    - name: Deploy all services to EKS
+      run: |
+        # Get the AWS Account ID dynamically
+        AWS_ACCOUNT_ID=\$(aws sts get-caller-identity --query Account --output text)
+        IMAGE_TAG=\${{ github.sha }}
+        
+        # Use kubectl to perform a rolling update for zero downtime
+        kubectl set image deployment/python-backend python-backend=\$AWS_ACCOUNT_ID.dkr.ecr.\$AWS_REGION.amazonaws.com/python-backend:\$IMAGE_TAG --record
+        kubectl set image deployment/react-frontend react-frontend=\$AWS_ACCOUNT_ID.dkr.ecr.\$AWS_REGION.amazonaws.com/react-frontend:\$IMAGE_TAG --record
+        kubectl set image deployment/go-processor go-processor=\$AWS_ACCOUNT_ID.dkr.ecr.\$AWS_REGION.amazonaws.com/go-processor:\$IMAGE_TAG --record
+
