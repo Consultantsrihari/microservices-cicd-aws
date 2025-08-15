@@ -1,0 +1,69 @@
+# .github/workflows/ci-pipeline.yml
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'python-backend/**'
+      - 'react-frontend/**'
+      - 'go-processor/**'
+
+jobs:
+  build-and-test:
+    name: Build and Test - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [python-backend, react-frontend, go-processor]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Needed for SonarCloud PR analysis
+
+      - name: Check for changes in service directory
+        id: changed-files
+        uses: tj-actions/changed-files@v35
+        with:
+          files: ${{ matrix.service }}
+
+      # Add placeholder Lint/Test steps here if files changed
+      - name: Run Lint & Tests
+        if: steps.changed-files.outputs.any_changed == 'true'
+        run: echo "Running tests for ${{ matrix.service }}..." # Add real test commands here
+
+      - name: SonarCloud Scan
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ matrix.service }}
+          args: >
+            -Dsonar.organization=your-sonarcloud-org
+            -Dsonar.projectKey=your-project-key_${{ matrix.service }}
+
+      - name: Configure AWS credentials
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        if: steps.changed-files.outputs.any_changed == 'true'
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ matrix.service }}:$IMAGE_TAG ./${{ matrix.service }}
+          docker push $ECR_REGISTRY/${{ matrix.service }}:$IMAGE_TAG
+
