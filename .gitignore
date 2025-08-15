@@ -1,0 +1,14 @@
+# Terraform local files
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+
+# React local files
+react-frontend/node_modules/
+react-frontend/build/
+
+# General OS files
+.DS_Store
+Thumbs.db
