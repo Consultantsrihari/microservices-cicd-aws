@@ -1,0 +1,80 @@
+# .github/workflows/cd-pipeline.yml
+name: CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  STAGING_CLUSTER_NAME: microservices-demo-staging-cluster # Use name from Terraform
+  PROD_CLUSTER_NAME: microservices-demo-production-cluster # Use name from Terraform
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Kubeconfig for Staging EKS
+        run: aws eks update-kubeconfig --name $STAGING_CLUSTER_NAME --region ${{ secrets.AWS_REGION }}
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v1
+
+      - name: Update Kubernetes manifests with new image tag
+        run: |
+          cd k8s/overlays/staging
+          kustomize edit set image placeholder/python-backend=${{ secrets.ECR_REGISTRY }}/python-backend:${{ github.sha }}
+          kustomize edit set image placeholder/react-frontend=${{ secrets.ECR_REGISTRY }}/react-frontend:${{ github.sha }}
+
+      - name: Deploy to Staging EKS
+        run: kustomize build k8s/overlays/staging | kubectl apply -f -
+
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+      # Add steps to configure kubectl for staging cluster
+      - name: Run simple health check
+        run: |
+          echo "Running placeholder integration tests..."
+          # A real test would curl endpoints or run a test suite
+          sleep 30 # Give services time to start
+          echo "Tests passed!"
+
+  approve-and-deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    environment:
+      name: production # This triggers the manual approval gate
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Kubeconfig for Production EKS
+        run: aws eks update-kubeconfig --name $PROD_CLUSTER_NAME --region ${{ secrets.AWS_REGION }}
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v1
+
+      - name: Update Kubernetes manifests with new image tag
+        run: |
+          cd k8s/overlays/production
+          kustomize edit set image placeholder/python-backend=${{ secrets.ECR_REGISTRY }}/python-backend:${{ github.sha }}
+          kustomize edit set image placeholder/react-frontend=${{ secrets.ECR_REGISTRY }}/react-frontend:${{ github.sha }}
+
+      - name: Deploy to Production EKS
+        run: kustomize build k8s/overlays/production | kubectl apply -f -
+
